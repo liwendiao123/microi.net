@@ -44,8 +44,8 @@ export function buildSeed() {
   ];
 
   const rules = [
-    { id: 'rule_1_all', scopeType: 1, deptId: null, advanceDays: 7, allowModify: 1, allowCancel: 1, overduePolicy: 1, maxQtyPerMeal: 2, remindEnabled: 1 },
-    { id: 'rule_2_D02', scopeType: 2, deptId: 'D02', advanceDays: 3, allowModify: 1, allowCancel: 0, overduePolicy: 1, maxQtyPerMeal: 1, remindEnabled: 1 },
+    { id: 'rule_1_all', scopeType: 1, deptId: null, advanceDays: 7, allowModify: 1, allowCancel: 1, overduePolicy: 1, maxQtyPerMeal: 2, freeQuota: 20, remindEnabled: 1 },
+    { id: 'rule_2_D02', scopeType: 2, deptId: 'D02', advanceDays: 3, allowModify: 1, allowCancel: 0, overduePolicy: 1, maxQtyPerMeal: 1, freeQuota: 15, remindEnabled: 1 },
   ];
 
   const calendar = {};
@@ -76,7 +76,34 @@ export function buildSeed() {
 
   const menus = [];
   const dishType = ['主荤', '素菜', '汤羹', '主食', '水果'];
+  const FREE_PRICE = { 主荤: 10, 素菜: 4, 汤羹: 2, 主食: 2, 水果: 2, 配菜: 2, 蛋: 3, 饮品: 3, 小菜: 2 };
+  const PAID_DISHES = {
+    B: [{ name: '鲜榨豆浆', type: '饮品', price: 3 }, { name: '卤蛋', type: '蛋', price: 2 }],
+    L: [{ name: '卤味拼盘', type: '自费菜', price: 8 }, { name: '酸奶', type: '饮品', price: 3 }],
+    D: [{ name: '加菜·红烧肉', type: '自费菜', price: 6 }, { name: '酸奶', type: '饮品', price: 3 }],
+  };
   const buildMenu = (date, period, names, status = 2) => {
+    const freeItems = names.map((name, idx) => {
+      const type = dishType[idx] || '配菜';
+      return {
+        id: `dish_${date}_${period.id}_${idx}`,
+        name,
+        type,
+        price: FREE_PRICE[type] ?? 2,
+        free: 1,
+        isMain: idx === 0,
+        sort: idx + 1,
+      };
+    });
+    const paidItems = (PAID_DISHES[period.id] || []).map((d, i) => ({
+      id: `dish_${date}_${period.id}_p${i}`,
+      name: d.name,
+      type: d.type,
+      price: d.price,
+      free: 0,
+      isMain: false,
+      sort: names.length + i + 1,
+    }));
     menus.push({
       id: `menu_${date}_${period.id}`,
       date,
@@ -86,14 +113,7 @@ export function buildSeed() {
       publishTime: status === 2 ? stamp : null,
       publishUserId: status === 2 ? 'u_9001' : null,
       remark: '',
-      items: names.map((name, idx) => ({
-        id: `dish_${date}_${period.id}_${idx}`,
-        name,
-        type: dishType[idx] || '配菜',
-        price: 0,
-        isMain: idx === 0,
-        sort: idx + 1,
-      })),
+      items: [...freeItems, ...paidItems],
     });
   };
 
@@ -107,8 +127,13 @@ export function buildSeed() {
   }
   buildMenu(addDays(today, 8), periods[1], lunchSets[1], 1);
 
-  const order = (account, date, periodId, status = 1, qty = 1, remark = '') => {
+  const quotaOf = (u) => (u.deptId === 'D02' ? 15 : 20);
+  const order = (account, date, periodId, status = 1, qty = 1, remark = '', paidNames = []) => {
     const u = users.find((x) => x.account === account);
+    const menu = menus.find((m) => m.date === date && m.periodId === periodId);
+    const picked = (menu?.items || []).filter((i) => i.free !== 0 || paidNames.includes(i.name));
+    const total = picked.reduce((s, i) => s + (i.price || 0), 0) * qty;
+    const free = Math.min(total, quotaOf(u) * qty);
     return {
       id: `ord_${account}_${date}_${periodId}`,
       userId: u.id,
@@ -121,6 +146,11 @@ export function buildSeed() {
       source: 1,
       qty,
       remark,
+      dishIds: picked.map((i) => i.id),
+      dishNames: picked.map((i) => i.name).join('、'),
+      totalAmount: Math.round(total * 100) / 100,
+      selfPayAmount: Math.round((total - free) * 100) / 100,
+      freeQuota: quotaOf(u),
       submitTime: stamp,
       cancelTime: status === 2 ? stamp : null,
       lockTime: null,
@@ -129,7 +159,7 @@ export function buildSeed() {
   };
 
   const orders = [
-    order('1001', today, 'L'),
+    order('1001', today, 'L', 1, 1, '', ['卤味拼盘']),
     order('1002', today, 'L'),
     order('1004', today, 'L'),
     order('1005', today, 'L'),

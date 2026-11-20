@@ -65,6 +65,7 @@
 
   const $ = (id) => document.getElementById(id);
   const DAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const money = (n) => (Number(n) || 0).toFixed(2);
 
   function openSheet(html) {
     const host = $('sheetHost');
@@ -171,8 +172,10 @@
     const order = p.order;
     let banner = '';
     if (order) {
+      const dishLine = order.dishNames ? `<div class="rec-meta">${esc(order.dishNames)}</div>` : '';
+      const payLine = order.selfPayAmount > 0 ? `<div class="pay-text">需自费 ¥${money(order.selfPayAmount)}</div>` : '';
       if (order.status === 1 || order.status === 4) {
-        banner = `<div class="status-banner"><div>已报餐 <b>${order.qty}</b> 份${order.remark ? ` · ${esc(order.remark)}` : ''}</div>${statusTag(order.status)}</div>`;
+        banner = `<div class="status-banner"><div>已报餐 <b>${order.qty}</b> 份${order.remark ? ` · ${esc(order.remark)}` : ''}${dishLine}${payLine}</div>${statusTag(order.status)}</div>`;
       } else if (order.status === 3) {
         banner = `<div class="status-banner pending"><div>逾期申请审核中，请耐心等待</div>${statusTag(order.status)}</div>`;
       } else if (order.status === 2) {
@@ -202,7 +205,7 @@
       </div>
       ${banner}
       <div class="dishes">
-        ${p.menu.items.map((i) => `<div class="dish"><b>${esc(i.name)}</b><span>${esc(i.type)}</span></div>`).join('')}
+        ${p.menu.items.map((i) => `<div class="dish ${i.free === 0 ? 'paid' : ''}"><b>${esc(i.name)}</b><span>${i.free === 0 ? '自费' : '免费'}${Number(i.price) > 0 ? ` ¥${money(i.price)}` : ''}</span></div>`).join('')}
       </div>
       <div class="actions">${actions.join('')}</div>
     </div>`;
@@ -217,13 +220,34 @@
   }
 
   function openOrderSheet(p) {
+    const items = p.menu.items || [];
     const max = state.home.rule?.maxQtyPerMeal || 1;
+    const quota = Number(state.home.rule?.freeQuota ?? 20);
     const current = p.order;
     const qty = current?.qty || 1;
+    const freeItems = items.filter((i) => i.free !== 0);
+    const paidItems = items.filter((i) => i.free === 0);
+    const picked = new Set(
+      Array.isArray(current?.dishIds) && current.dishIds.length ? current.dishIds : freeItems.map((i) => i.id),
+    );
+
+    const group = (title, list, hint) => (list.length ? `<div class="dish-group">
+      <div class="g-title">${title}<span>${hint}</span></div>
+      ${list.map((i) => `<label class="dish-opt">
+        <input type="checkbox" data-dish="${esc(i.id)}" ${picked.has(i.id) ? 'checked' : ''}>
+        <span class="nm">${esc(i.name)}</span>
+        <span class="ty">${esc(i.type)}</span>
+        <span class="pr">${i.free === 0 ? `<b>+¥${money(i.price)}</b>` : `¥${money(i.price)}`}</span>
+      </label>`).join('')}
+    </div>` : '');
+
     const sheet = openSheet(`
       <h3>${current ? '修改报餐' : '确认报餐'} · ${esc(p.name)}</h3>
-      <div class="muted" style="font-size:13px;margin:-8px 0 16px">${esc(state.date)} ${weekdayName(state.date)} · 截止 ${esc(p.deadlineText)}</div>
-      <div class="field">
+      <div class="muted" style="font-size:13px;margin:-8px 0 12px">${esc(state.date)} ${weekdayName(state.date)} · 截止 ${esc(p.deadlineText)}</div>
+      <div class="quote-tip">免费额度 <b>¥${money(quota)}</b> / 份，超出部分需自费</div>
+      ${group('免费套餐', freeItems, '已默认全选，可取消不要的菜')}
+      ${group('自费菜', paidItems, '按份加价，可自由勾选')}
+      <div class="field" style="margin-top:12px">
         <label>份数</label>
         <select class="select" id="qtySel">${Array.from({ length: max }, (_, i) => `<option value="${i + 1}" ${i + 1 === qty ? 'selected' : ''}>${i + 1} 份</option>`).join('')}</select>
       </div>
@@ -231,15 +255,34 @@
         <label>备注（选填，如忌口）</label>
         <input class="input" id="remarkInput" maxlength="60" value="${esc(current?.remark || '')}" placeholder="少辣、不要香菜…">
       </div>
+      <div class="quote-box">
+        <div><span>餐标合计</span><b>¥<span id="qTotal">0.00</span></b></div>
+        <div><span>需自费</span><b class="pay" id="qPay">¥0.00</b></div>
+      </div>
       <div class="actions">
         <button class="btn" id="sheetCancel">取消</button>
         <button class="btn primary" id="sheetOk">确认</button>
       </div>
     `);
+
+    const recalc = () => {
+      const n = Number(sheet.querySelector('#qtySel').value) || 1;
+      const ids = [...sheet.querySelectorAll('[data-dish]:checked')].map((el) => el.dataset.dish);
+      const unit = ids.reduce((s, id) => s + (Number(items.find((i) => i.id === id)?.price) || 0), 0);
+      const total = unit * n;
+      const pay = Math.max(0, total - quota * n);
+      sheet.querySelector('#qTotal').textContent = money(total);
+      sheet.querySelector('#qPay').textContent = `¥${money(pay)}`;
+      sheet.querySelector('#sheetOk').disabled = ids.length === 0;
+    };
+    sheet.querySelectorAll('[data-dish], #qtySel').forEach((el) => el.addEventListener('change', recalc));
+    recalc();
+
     sheet.querySelector('#sheetCancel').addEventListener('click', closeSheet);
     sheet.querySelector('#sheetOk').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
+      const dishIds = [...sheet.querySelectorAll('[data-dish]:checked')].map((el) => el.dataset.dish);
       try {
         await api('/api/orders', {
           method: 'POST',
@@ -247,6 +290,7 @@
             date: state.date,
             periodId: p.id,
             qty: Number(sheet.querySelector('#qtySel').value),
+            dishIds,
             remark: sheet.querySelector('#remarkInput').value,
             idempotencyKey: crypto.randomUUID(),
           },
@@ -358,7 +402,8 @@
             <div class="date">${esc(o.date)} ${esc(o.periodName)}</div>
             ${statusTag(o.status)}
           </div>
-          <div class="rec-meta">${o.qty} 份${o.remark ? ' · ' + esc(o.remark) : ''} · 提交于 ${esc(o.submitTime || '')}</div>
+          <div class="rec-meta">${o.qty} 份${o.dishNames ? ' · ' + esc(o.dishNames) : ''}${o.remark ? ' · ' + esc(o.remark) : ''} · 提交于 ${esc(o.submitTime || '')}</div>
+          ${o.selfPayAmount > 0 ? `<div class="rec-meta pay-text">需自费 ¥${money(o.selfPayAmount)}（餐标 ¥${money(o.totalAmount)}）</div>` : ''}
         </div>`).join('');
     } catch (e) {
       box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -373,7 +418,7 @@
       <div style="display:flex;justify-content:space-between;padding:6px 0"><span class="muted">部门</span><span>${esc(u.deptName)}</span></div>`;
     const r = state.home?.rule;
     $('ruleBox').innerHTML = r
-      ? `最多提前 <b>${r.advanceDays}</b> 天报餐；截止前${r.allowCancel ? '可' : '不可'}自助取消；单餐上限 <b>${r.maxQtyPerMeal}</b> 份。`
+      ? `最多提前 <b>${r.advanceDays}</b> 天报餐；截止前${r.allowCancel ? '可' : '不可'}自助取消；单餐上限 <b>${r.maxQtyPerMeal}</b> 份；免费额度 <b>¥${money(r.freeQuota ?? 20)}</b> / 份，超出部分自费。`
       : '暂未获取到规则。';
   }
 

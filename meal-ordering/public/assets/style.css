@@ -110,6 +110,26 @@ button { font-family: inherit; }
 .dish { font-size: 13px; padding: 6px 11px; border-radius: 7px; background: #f6f8fb; border: 1px solid #eef2f7; }
 .dish b { font-weight: 500; }
 .dish span { color: var(--muted); font-size: 11.5px; margin-left: 4px; }
+.dish.paid { background: #fdf7ea; border-color: #f3e3c2; }
+.dish.paid span { color: var(--warn); }
+
+/* 选菜与费用试算 */
+.quote-tip { font-size: 12.5px; color: var(--muted); background: var(--brand-soft); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
+.quote-tip b { color: var(--brand); }
+.dish-group { margin-bottom: 12px; }
+.dish-group .g-title { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+.dish-group .g-title span { font-size: 11.5px; color: var(--muted); font-weight: 400; }
+.dish-opt { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; font-size: 13.5px; cursor: pointer; }
+.dish-opt input { width: 16px; height: 16px; accent-color: var(--brand); flex: 0 0 auto; }
+.dish-opt .nm { flex: 1; min-width: 0; }
+.dish-opt .ty { color: var(--muted); font-size: 11.5px; }
+.dish-opt .pr { color: var(--muted); font-variant-numeric: tabular-nums; }
+.dish-opt .pr b { color: var(--warn); font-weight: 600; }
+.dish-opt:has(input:checked) { border-color: #b9cde8; background: #f7faff; }
+.quote-box { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: #f7f9fc; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.quote-box > div { display: flex; justify-content: space-between; align-items: baseline; }
+.quote-box b { font-variant-numeric: tabular-nums; }
+.quote-box .pay { color: var(--danger); font-size: 17px; }
 
 .empty { text-align: center; color: var(--muted); font-size: 13.5px; padding: 36px 10px; }
 .status-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 9px; background: #f2f8f4; border: 1px solid #d9ecdf; margin-bottom: 12px; font-size: 13.5px; }
@@ -183,7 +203,7 @@ table.tbl td.ops { white-space: nowrap; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 
 .dish-editor { display: flex; flex-direction: column; gap: 8px; }
-.dish-line { display: grid; grid-template-columns: 1fr 120px 34px; gap: 8px; }
+.dish-line { display: grid; grid-template-columns: 1fr 96px 88px 110px 34px; gap: 8px; }
 .dish-line button { border: 1px solid var(--line); background: #fff; border-radius: 7px; color: var(--muted); cursor: pointer; }
 .dish-line button:hover { color: var(--danger); border-color: #f1c6c1; }
 
@@ -213,5 +233,5 @@ table.tbl td.ops { white-space: nowrap; }
   .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
   .rule-form { grid-template-columns: 1fr; }
   .cal-row { grid-template-columns: 1fr 1fr; }
-  .dish-line { grid-template-columns: 1fr 90px 34px; }
+  .dish-line { grid-template-columns: 1fr 1fr 1fr; }
 }

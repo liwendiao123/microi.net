@@ -150,14 +150,14 @@
           <div class="kpi"><div class="k">今日报餐</div><div class="v">${ov.total}</div><div class="s">人次（不含已取消）</div></div>
           <div class="kpi"><div class="k">待审异常</div><div class="v">${ov.pending}</div><div class="s">条待处理申请</div></div>
           <div class="kpi"><div class="k">午餐人数</div><div class="v">${ov.byPeriod.find((p) => p.periodId === 'L')?.total ?? 0}</div><div class="s">截止前可调整</div></div>
-          <div class="kpi"><div class="k">晚餐人数</div><div class="v">${ov.byPeriod.find((p) => p.periodId === 'D')?.total ?? 0}</div><div class="s">按部门统计</div></div>
+          <div class="kpi"><div class="k">今日自费</div><div class="v">¥${Number(ov.selfPay || 0).toFixed(2)}</div><div class="s">超出免费额度部分</div></div>
         </div>
         <div class="grid-2">
           <div class="card">
             <h3>各餐次汇总 <span class="muted" style="font-weight:400;font-size:12px">${esc(state.date)}</span></h3>
             <div class="tbl-wrap"><table class="tbl">
-              <thead><tr><th>餐次</th><th>截止时间</th><th>报餐人数</th><th>份数</th></tr></thead>
-              <tbody>${ov.byPeriod.map((p) => `<tr><td>${esc(p.periodName)}</td><td class="mono">${esc(p.deadline)}</td><td>${p.total}</td><td>${p.qty}</td></tr>`).join('')}</tbody>
+              <thead><tr><th>餐次</th><th>截止时间</th><th>报餐人数</th><th>份数</th><th>自费</th></tr></thead>
+              <tbody>${ov.byPeriod.map((p) => `<tr><td>${esc(p.periodName)}</td><td class="mono">${esc(p.deadline)}</td><td>${p.total}</td><td>${p.qty}</td><td>¥${Number(p.selfPay || 0).toFixed(2)}</td></tr>`).join('')}</tbody>
             </table></div>
           </div>
           <div class="card">
@@ -195,10 +195,12 @@
       const data = await api(`/api/admin/orders?date=${state.date}&periodId=${state.periodId}&status=${state.status}`);
       const rows = data.orders;
       main.querySelector('#orderBody').innerHTML = rows.length ? `<div class="tbl-wrap"><table class="tbl">
-        <thead><tr><th>姓名</th><th>部门</th><th>餐次</th><th>状态</th><th>份数</th><th>备注</th><th>提交时间</th>${canProxy ? '<th>操作</th>' : ''}</tr></thead>
+        <thead><tr><th>姓名</th><th>部门</th><th>餐次</th><th>状态</th><th>份数</th><th>所选菜品</th><th>自费</th><th>备注</th><th>提交时间</th>${canProxy ? '<th>操作</th>' : ''}</tr></thead>
         <tbody>${rows.map((o) => `<tr>
           <td>${esc(o.userName)}</td><td>${esc(o.deptName)}</td><td>${esc(o.periodName)}</td>
-          <td>${statusTag(o.status)}</td><td>${o.qty}</td><td>${esc(o.remark || '—')}</td>
+          <td>${statusTag(o.status)}</td><td>${o.qty}</td><td style="max-width:260px">${esc(o.dishNames || '—')}</td>
+          <td>${Number(o.selfPayAmount || 0) > 0 ? `¥${Number(o.selfPayAmount).toFixed(2)}` : '—'}</td>
+          <td>${esc(o.remark || '—')}</td>
           <td class="mono" style="font-size:12px">${esc(o.submitTime || '—')}</td>
           ${canProxy ? `<td class="ops">${o.status === 1 || o.status === 4 ? `<button class="btn sm danger" data-cancel="${o.id}">取消</button>` : ''}</td>` : ''}
         </tr>`).join('')}</tbody></table></div>` : '<div class="empty">该条件下暂无报餐</div>';
@@ -314,11 +316,11 @@
         $('statBody').innerHTML = `
           <h3>${esc(d)} · ${esc(periodName(p))} <span class="muted" style="font-weight:400;font-size:12px">共 ${s.total} 人 / ${s.qty} 份</span></h3>
           <div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th style="width:140px">部门</th><th>人数分布</th><th>报餐人数</th><th>份数</th></tr></thead>
+            <thead><tr><th style="width:140px">部门</th><th>人数分布</th><th>报餐人数</th><th>份数</th><th>餐标金额</th><th>自费金额</th></tr></thead>
             <tbody>${s.byDept.map((x) => `<tr><td>${esc(x.deptName)}</td>
               <td><div class="bar-track"><div class="bar-fill" style="width:${(x.count / max * 100).toFixed(0)}%"></div></div></td>
-              <td>${x.count}</td><td>${x.qty}</td></tr>`).join('')}
-              <tr><td><b>合计</b></td><td></td><td><b>${s.total}</b></td><td><b>${s.qty}</b></td></tr>
+              <td>${x.count}</td><td>${x.qty}</td><td>¥${Number(x.amount || 0).toFixed(2)}</td><td>¥${Number(x.selfPay || 0).toFixed(2)}</td></tr>`).join('')}
+              <tr><td><b>合计</b></td><td></td><td><b>${s.total}</b></td><td><b>${s.qty}</b></td><td><b>¥${Number(s.amount || 0).toFixed(2)}</b></td><td><b>¥${Number(s.selfPay || 0).toFixed(2)}</b></td></tr>
             </tbody></table></div>`;
       } catch (e) {
         $('statBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
@@ -359,12 +361,14 @@
         $('menuBody').innerHTML = `
           <h3>${esc(periodName(state.menuPeriod))}菜单 ${statusText}</h3>
           <div class="field" style="margin-bottom:14px"><label>菜单标题</label><input class="input" id="mTitle" value="${esc(menu.title || '')}" maxlength="60"></div>
-          <div class="field" style="margin-bottom:10px"><label>菜品</label>
+          <div class="field" style="margin-bottom:10px"><label>菜品（区分免费套餐与自费菜，单价用于计算餐标与自费）</label>
             <div class="dish-editor" id="dishEditor">
-              ${(menu.items.length ? menu.items : [{ name: '', type: '主荤' }]).map((i) => `
+              ${(menu.items.length ? menu.items : [{ name: '', type: '主荤', price: 0, free: 1 }]).map((i) => `
                 <div class="dish-line">
                   <input class="input" data-name value="${esc(i.name || '')}" placeholder="菜名">
-                  <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜'].map((t) => `<option ${t === i.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+                  <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜', '饮品'].map((t) => `<option ${t === i.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+                  <input class="input" data-price type="number" min="0" step="0.5" value="${Number(i.price || 0)}" placeholder="单价">
+                  <select class="select" data-free><option value="1" ${i.free !== 0 ? 'selected' : ''}>免费套餐</option><option value="0" ${i.free === 0 ? 'selected' : ''}>自费菜</option></select>
                   <button type="button" data-del>×</button>
                 </div>`).join('')}
             </div>
@@ -385,6 +389,8 @@
           const items = [...$('dishEditor').querySelectorAll('.dish-line')].map((line) => ({
             name: line.querySelector('[data-name]').value.trim(),
             type: line.querySelector('[data-type]').value,
+            price: Number(line.querySelector('[data-price]').value || 0),
+            free: line.querySelector('[data-free]').value === '1',
           })).filter((i) => i.name);
           try {
             await api('/api/admin/menus/save', { method: 'POST', body: { date: state.menuDate, periodId: state.menuPeriod, title: $('mTitle').value, items } });
@@ -413,7 +419,9 @@
       const div = document.createElement('div');
       div.className = 'dish-line';
       div.innerHTML = `<input class="input" data-name placeholder="菜名">
-        <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜'].map((t) => `<option>${t}</option>`).join('')}</select>
+        <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜', '饮品'].map((t) => `<option>${t}</option>`).join('')}</select>
+        <input class="input" data-price type="number" min="0" step="0.5" value="0" placeholder="单价">
+        <select class="select" data-free><option value="1">免费套餐</option><option value="0">自费菜</option></select>
         <button type="button" data-del>×</button>`;
       div.querySelector('[data-del]').addEventListener('click', () => {
         if ($('dishEditor').querySelectorAll('.dish-line').length > 1) div.remove();
@@ -438,6 +446,7 @@
         <div class="rule-form" style="margin-bottom:18px">
           <div class="field"><label>最多提前天数</label><input class="input" type="number" id="rAdvance" min="0" max="30" value="${global.advanceDays}"></div>
           <div class="field"><label>单餐最多份数</label><input class="input" type="number" id="rQty" min="1" max="10" value="${global.maxQtyPerMeal}"></div>
+          <div class="field"><label>免费额度（元/份）</label><input class="input" type="number" id="rQuota" min="0" step="1" value="${Number(global.freeQuota ?? 20)}"></div>
           <div class="field"><label>逾期策略</label><select class="select" id="rOverdue">${opts([[1, '需申请审核'], [0, '直接拒绝'], [2, '管理员可代报']], global.overduePolicy)}</select></div>
           <div class="field" style="justify-content:flex-end;gap:10px">
             <label class="check"><input type="checkbox" id="rModify" ${global.allowModify ? 'checked' : ''}> 允许截止前修改</label>
@@ -451,12 +460,13 @@
           <div class="field"><label>部门</label><select class="select" id="ovDept">${state.depts.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
           <div class="field"><label>最多提前天数</label><input class="input" type="number" id="ovAdvance" min="0" max="30" value="${global.advanceDays}"></div>
           <div class="field"><label>单餐份数</label><input class="input" type="number" id="ovQty" min="1" max="10" value="${global.maxQtyPerMeal}"></div>
+          <div class="field"><label>免费额度（元/份）</label><input class="input" type="number" id="ovQuota" min="0" step="1" value="${Number(global.freeQuota ?? 20)}"></div>
           <div class="field"><label>&nbsp;</label><label class="check" style="height:40px"><input type="checkbox" id="ovCancel" checked> 允许取消</label></div>
           <button class="btn" id="saveOverride">保存部门规则</button>
         </div>
         ${overrides.length ? `<div class="tbl-wrap" style="margin-top:12px"><table class="tbl">
-          <thead><tr><th>部门</th><th>提前天数</th><th>单餐份数</th><th>允许取消</th><th>逾期策略</th></tr></thead>
-          <tbody>${overrides.map((r) => `<tr><td>${esc(state.depts.find((d) => d.id === r.deptId)?.name || r.deptId)}</td><td>${r.advanceDays}</td><td>${r.maxQtyPerMeal}</td><td>${r.allowCancel ? '是' : '否'}</td><td>${r.overduePolicy === 0 ? '直接拒绝' : r.overduePolicy === 2 ? '管理员代报' : '需申请审核'}</td></tr>`).join('')}</tbody>
+          <thead><tr><th>部门</th><th>提前天数</th><th>单餐份数</th><th>免费额度</th><th>允许取消</th><th>逾期策略</th></tr></thead>
+          <tbody>${overrides.map((r) => `<tr><td>${esc(state.depts.find((d) => d.id === r.deptId)?.name || r.deptId)}</td><td>${r.advanceDays}</td><td>${r.maxQtyPerMeal}</td><td>¥${Number(r.freeQuota ?? 20)}</td><td>${r.allowCancel ? '是' : '否'}</td><td>${r.overduePolicy === 0 ? '直接拒绝' : r.overduePolicy === 2 ? '管理员代报' : '需申请审核'}</td></tr>`).join('')}</tbody>
         </table></div>` : '<div class="empty">暂无部门覆盖</div>'}
 
         <h3 style="margin-top:28px">餐次与截止时间</h3>
@@ -469,6 +479,7 @@
         try {
           await api('/api/admin/rules/save', { method: 'POST', body: {
             scopeType: 1, advanceDays: Number($('rAdvance').value), maxQtyPerMeal: Number($('rQty').value),
+            freeQuota: Number($('rQuota').value),
             overduePolicy: Number($('rOverdue').value), allowModify: $('rModify').checked, allowCancel: $('rCancel').checked,
           } });
           toast('全局规则已保存'); renderRules();
@@ -478,7 +489,7 @@
         try {
           await api('/api/admin/rules/save', { method: 'POST', body: {
             scopeType: 2, deptId: $('ovDept').value, advanceDays: Number($('ovAdvance').value),
-            maxQtyPerMeal: Number($('ovQty').value), allowCancel: $('ovCancel').checked,
+            maxQtyPerMeal: Number($('ovQty').value), freeQuota: Number($('ovQuota').value), allowCancel: $('ovCancel').checked,
             allowModify: 1, overduePolicy: 1,
           } });
           toast('部门规则已保存'); renderRules();

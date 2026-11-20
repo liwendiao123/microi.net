@@ -6,6 +6,34 @@ import { cnNow, isDateStr, weekday, daysBetween, deadlineTs } from './util.js';
 
 export const ST = { BOOKED: 1, CANCELLED: 2, PENDING: 3, PROXY: 4, LOCKED: 5 };
 export const ST_TEXT = { 1: '已报餐', 2: '已取消', 3: '逾期待审', 4: '管理员代报', 5: '已锁定' };
+export const DEFAULT_FREE_QUOTA = 20;
+
+export function round2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+export function freeQuotaOf(rule) {
+  const n = Number(rule?.freeQuota);
+  return Number.isFinite(n) && n >= 0 ? round2(n) : DEFAULT_FREE_QUOTA;
+}
+
+// 计算所选菜品的餐标金额与自费金额：免费额度按份数叠加，超出部分自费。
+export function quoteMenu(menu, dishIds, qty, quota) {
+  const ids = [...new Set((Array.isArray(dishIds) ? dishIds : []).map(String))];
+  const items = menu?.items || [];
+  const picked = ids.map((id) => items.find((i) => String(i.id) === id)).filter(Boolean);
+  if (picked.length !== ids.length) throw new AppError('菜品已更新，请刷新后重试', 'DISH_CHANGED', 409);
+  if (!picked.length) throw new AppError('请至少选择 1 道菜品', 'NO_DISH', 400);
+  const unit = picked.reduce((s, i) => s + (Number(i.price) || 0), 0);
+  const totalAmount = round2(unit * qty);
+  const freeAmount = round2(Math.min(totalAmount, quota * qty));
+  return {
+    items: picked,
+    totalAmount,
+    freeAmount,
+    selfPayAmount: round2(totalAmount - freeAmount),
+  };
+}
 
 export class AppError extends Error {
   constructor(message, code = 'BAD_REQUEST', status = 400) {
@@ -87,6 +115,7 @@ export function submitOrder(user, input, ctx = {}) {
   if (!isMealDay(db, date)) throw new AppError('该日期不供餐');
   const menu = menuFor(db, date, periodId);
   if (!menu || menu.status !== 2) throw new AppError('该餐次菜单尚未发布', 'NO_MENU', 409);
+  const quota = freeQuotaOf(rule);
 
   const proxy = !!input.proxy;
   if (!proxy && deadlineInfo(date, period).passed) {
@@ -100,10 +129,22 @@ export function submitOrder(user, input, ctx = {}) {
   }
 
   const now = cnNow();
+  let dishIds = Array.isArray(input.dishIds) ? input.dishIds.map(String) : [];
+  if (!dishIds.length) dishIds = (menu.items || []).filter((i) => i.free !== 0).map((i) => i.id);
+  const quote = quoteMenu(menu, dishIds, qty, quota);
+  const dishFields = {
+    dishIds: quote.items.map((i) => i.id),
+    dishNames: quote.items.map((i) => i.name).join('、'),
+    totalAmount: quote.totalAmount,
+    selfPayAmount: quote.selfPayAmount,
+    freeQuota: quota,
+  };
+
   if (existing) {
     const before = snapshot(existing);
     existing.qty = qty;
     existing.remark = String(input.remark ?? '').slice(0, 300);
+    Object.assign(existing, dishFields);
     existing.status = proxy ? ST.PROXY : ST.BOOKED;
     existing.source = proxy ? 2 : 1;
     existing.idempotencyKey = input.idempotencyKey || '';
@@ -134,6 +175,7 @@ export function submitOrder(user, input, ctx = {}) {
     source: proxy ? 2 : 1,
     qty,
     remark: String(input.remark ?? '').slice(0, 300),
+    ...dishFields,
     submitTime: now.stamp,
     cancelTime: null,
     lockTime: null,
@@ -200,6 +242,10 @@ export function createException(user, input, ctx = {}) {
       source: 3,
       qty: 1,
       remark: '',
+      dishIds: [],
+      dishNames: '',
+      totalAmount: 0,
+      selfPayAmount: 0,
       submitTime: now.stamp,
       cancelTime: null,
       lockTime: null,
@@ -279,14 +325,18 @@ export function statsByDept(db, { date, periodId, deptId = null }) {
   );
   const map = new Map();
   for (const o of rows) {
-    if (!map.has(o.deptId)) map.set(o.deptId, { deptId: o.deptId, deptName: o.deptName, count: 0, qty: 0 });
+    if (!map.has(o.deptId)) map.set(o.deptId, { deptId: o.deptId, deptName: o.deptName, count: 0, qty: 0, amount: 0, selfPay: 0 });
     const v = map.get(o.deptId);
     v.count += 1;
     v.qty += o.qty || 1;
+    v.amount = round2(v.amount + (o.totalAmount || 0));
+    v.selfPay = round2(v.selfPay + (o.selfPayAmount || 0));
   }
   return {
     total: rows.length,
     qty: rows.reduce((s, o) => s + (o.qty || 1), 0),
+    amount: round2(rows.reduce((s, o) => s + (o.totalAmount || 0), 0)),
+    selfPay: round2(rows.reduce((s, o) => s + (o.selfPayAmount || 0), 0)),
     byDept: [...map.values()].sort((a, b) => b.count - a.count),
   };
 }
@@ -295,8 +345,15 @@ export function overview(db, date) {
   const periods = db.periods.filter((p) => p.status === 1).sort((a, b) => a.sort - b.sort);
   const byPeriod = periods.map((p) => {
     const s = statsByDept(db, { date, periodId: p.id });
-    return { periodId: p.id, periodName: p.periodName, total: s.total, qty: s.qty, deadline: p.deadlineTime };
+    return { periodId: p.id, periodName: p.periodName, total: s.total, qty: s.qty, amount: s.amount, selfPay: s.selfPay, deadline: p.deadlineTime };
   });
   const pending = db.exceptions.filter((e) => e.status === 1).length;
-  return { date, byPeriod, pending, total: byPeriod.reduce((s, x) => s + x.total, 0) };
+  return {
+    date,
+    byPeriod,
+    pending,
+    total: byPeriod.reduce((s, x) => s + x.total, 0),
+    amount: round2(byPeriod.reduce((s, x) => s + x.amount, 0)),
+    selfPay: round2(byPeriod.reduce((s, x) => s + x.selfPay, 0)),
+  };
 }

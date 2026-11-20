@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { getDb, save } from './lib/store.js';
 import { login, logout, currentUser, publicUser, sessionCookie, clearCookie } from './lib/auth.js';
 import {
-  AppError, ST, ST_TEXT, isMealDay, ruleFor, periodById, menuFor, deadlineInfo,
+  AppError, ST, ST_TEXT, isMealDay, ruleFor, periodById, menuFor, deadlineInfo, freeQuotaOf,
   submitOrder, cancelOrder, createException, auditException, statsByDept, overview, orderView, writeLog,
 } from './lib/domain.js';
 import { cnNow, isDateStr, addDays, csv, minutesLeft } from './lib/util.js';
@@ -129,7 +129,7 @@ route('GET', '/api/home', async (req, res, url) => {
         canOrder: isMealDay(db, date) && menu?.status === 2 && !deadlineInfo(date, p).passed,
       };
     });
-  ok(res, { date, isMealDay: isMealDay(db, date), calendar: db.calendar?.[date] || null, rule, periods });
+  ok(res, { date, isMealDay: isMealDay(db, date), calendar: db.calendar?.[date] || null, rule: { ...rule, freeQuota: freeQuotaOf(rule) }, periods });
 });
 
 route('GET', '/api/menu', async (req, res, url) => {
@@ -275,20 +275,24 @@ route('GET', '/api/admin/export', async (req, res, url) => {
       .filter((o) => o.date === date && o.periodId === periodId)
       .map((o) => ({
         date: o.date, period: period.periodName, dept: o.deptName, name: o.userName,
-        status: ST_TEXT[o.status], qty: o.qty, submitTime: o.submitTime, remark: o.remark,
+        status: ST_TEXT[o.status], qty: o.qty, dishes: o.dishNames || '',
+        amount: o.totalAmount || 0, selfPay: o.selfPayAmount || 0,
+        submitTime: o.submitTime, remark: o.remark,
       }));
     content = csv(rows, [
       { key: 'date', label: '日期' }, { key: 'period', label: '餐次' }, { key: 'dept', label: '部门' },
       { key: 'name', label: '姓名' }, { key: 'status', label: '状态' }, { key: 'qty', label: '份数' },
+      { key: 'dishes', label: '所选菜品' }, { key: 'amount', label: '餐标金额' }, { key: 'selfPay', label: '自费金额' },
       { key: 'submitTime', label: '提交时间' }, { key: 'remark', label: '备注' },
     ]);
     filename = `meal-detail-${date}-${periodId}.csv`;
   } else {
     const s = statsByDept(db, { date, periodId });
-    const rows = s.byDept.map((d) => ({ dept: d.deptName, count: d.count, qty: d.qty }));
-    rows.push({ dept: '合计', count: s.total, qty: s.qty });
+    const rows = s.byDept.map((d) => ({ dept: d.deptName, count: d.count, qty: d.qty, amount: d.amount, selfPay: d.selfPay }));
+    rows.push({ dept: '合计', count: s.total, qty: s.qty, amount: s.amount, selfPay: s.selfPay });
     content = csv(rows, [
       { key: 'dept', label: '部门' }, { key: 'count', label: '报餐人数' }, { key: 'qty', label: '份数' },
+      { key: 'amount', label: '餐标金额' }, { key: 'selfPay', label: '自费金额' },
     ]);
     filename = `meal-summary-${date}-${periodId}.csv`;
   }
@@ -322,10 +326,11 @@ route('POST', '/api/admin/menus/save', async (req, res) => {
   const items = (Array.isArray(body.items) ? body.items : [])
     .filter((i) => String(i.name || '').trim())
     .map((i, idx) => ({
-      id: i.id || `dish_${idx}`,
+      id: i.id || `dish_${body.date}_${body.periodId}_${idx}`,
       name: String(i.name).trim().slice(0, 60),
       type: String(i.type || '热菜'),
-      price: Number(i.price || 0),
+      price: Math.max(0, Number(i.price || 0)),
+      free: i.free === undefined || i.free === null ? 1 : (i.free ? 1 : 0),
       isMain: !!i.isMain,
       sort: idx + 1,
     }));
@@ -392,6 +397,7 @@ route('POST', '/api/admin/rules/save', async (req, res) => {
     allowCancel: body.allowCancel ? 1 : 0,
     overduePolicy: Number(body.overduePolicy ?? 1),
     maxQtyPerMeal: Math.max(1, Number(body.maxQtyPerMeal ?? 1)),
+    freeQuota: Math.max(0, Number(body.freeQuota ?? 20)),
     remindEnabled: body.remindEnabled ? 1 : 0,
   });
   writeLog(db, { action: '保存报餐规则', before, after: rule, operator: user, ip: req.socket.remoteAddress, source: 'admin' });

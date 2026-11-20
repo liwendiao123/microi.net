@@ -142,6 +142,35 @@ check('导出被拒绝于普通职工', (await fetch(`${base}/api/admin/export?t
 const logs = await call('GET', '/api/admin/logs?limit=100', null, admin);
 check('操作留痕已记录', logs.json.Data.logs.length > 0 && logs.json.Data.logs.some((l) => l.action === '导出数据'));
 
+console.log('\n[7] 菜品选择与自费计算');
+const home = await call('GET', `/api/home?date=${target}`, null, staff);
+const lunch = home.json.Data.periods.find((p) => p.id === 'L');
+const freeDishes = lunch.menu.items.filter((i) => i.free !== 0);
+const paidDish = lunch.menu.items.find((i) => i.free === 0);
+const quota = Number(home.json.Data.rule.freeQuota);
+check('菜单区分免费套餐与自费菜', freeDishes.length > 0 && !!paidDish);
+const unitPrice = freeDishes.reduce((s, i) => s + i.price, 0) + paidDish.price;
+const picked = await call('POST', '/api/orders', {
+  date: target, periodId: 'L', qty: 1, dishIds: [...freeDishes.map((i) => i.id), paidDish.id],
+}, staff);
+check('可勾选免费套餐与自费菜', picked.json.Code === 1, JSON.stringify(picked.json));
+check('按免费额度计算自费金额', Math.abs(picked.json.Data.order.selfPayAmount - Math.max(0, unitPrice - quota)) < 0.001,
+  `selfPay=${picked.json.Data.order.selfPayAmount} unit=${unitPrice} quota=${quota}`);
+check('报餐记录保存所选菜品', picked.json.Data.order.dishIds.length === freeDishes.length + 1);
+const badDish = await call('POST', '/api/orders', { date: target, periodId: 'L', qty: 1, dishIds: ['not-exist'] }, staff);
+check('无效菜品被拒绝', badDish.json.Code === 0);
+const statWithAmount = await call('GET', `/api/admin/stats?date=${target}&periodId=L`, null, manager);
+check('统计包含餐标与自费合计', typeof statWithAmount.json.Data.amount === 'number' && typeof statWithAmount.json.Data.selfPay === 'number');
+const rulesData = await call('GET', '/api/admin/rules', null, manager);
+const globalRule = rulesData.json.Data.rules.find((r) => r.scopeType === 1);
+await call('POST', '/api/admin/rules/save', {
+  scopeType: 1, advanceDays: globalRule.advanceDays, maxQtyPerMeal: globalRule.maxQtyPerMeal,
+  allowModify: true, allowCancel: true, overduePolicy: 1, freeQuota: unitPrice + 100,
+}, manager);
+const raised = await call('POST', '/api/orders', { date: target, periodId: 'L', qty: 1, dishIds: [paidDish.id] }, staff);
+check('提高免费额度后无需自费', raised.json.Code === 1 && raised.json.Data.order.selfPayAmount === 0,
+  JSON.stringify(raised.json.Data?.order?.selfPayAmount));
+
 console.log(`\n结果：${passed} 项通过，${failures.length} 项失败`);
 stop();
 process.exit(failures.length ? 1 : 0);
