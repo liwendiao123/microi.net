@@ -485,7 +485,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`报餐系统已启动: http://localhost:${PORT}`);
   console.log(`职工端: /app    管理端: /admin    登录: /login`);
 });

@@ -3,21 +3,10 @@
 
 import crypto from 'node:crypto';
 import { getDb, save } from './store.js';
+import { checkPassword } from './password.js';
 
 const COOKIE = 'meal_session';
 const MAX_AGE = 7 * 24 * 3600;
-
-export function makePassword(pwd, salt = crypto.randomBytes(16).toString('hex')) {
-  return { salt, pwdHash: crypto.scryptSync(String(pwd), salt, 32).toString('hex') };
-}
-
-export function checkPassword(pwd, user) {
-  if (!user?.salt || !user?.pwdHash) return false;
-  const hash = crypto.scryptSync(String(pwd), user.salt, 32).toString('hex');
-  const a = Buffer.from(hash, 'hex');
-  const b = Buffer.from(user.pwdHash, 'hex');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
 
 export function parseCookies(req) {
   const out = {};
