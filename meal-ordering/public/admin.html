@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理后台 · 内部报餐系统</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="admin">
+  <aside class="side">
+    <div class="logo">内部报餐管理<small>MEAL ADMIN</small></div>
+
+    <div class="grp">报餐</div>
+    <a data-view="overview" class="active">今日看板</a>
+    <a data-view="orders">报餐明细</a>
+    <a data-view="exceptions">异常处理</a>
+    <a data-view="stats">汇总统计</a>
+
+    <div class="grp">配置</div>
+    <a data-view="menus">菜单维护</a>
+    <a data-view="rules">报餐规则</a>
+    <a data-view="calendar">工作日历</a>
+    <a data-view="logs">操作日志</a>
+
+    <div class="who">
+      <b id="whoName">—</b>
+      <span id="whoDept"></span>
+      <button id="logoutBtn">退出登录</button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="empty">加载中…</div>
+  </main>
+</div>
+<div id="modalHost"></div>
+
+<script type="module">
+  import { api, toast, statusTag, today, addDays, weekdayName, esc } from '/assets/api.js';
+
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    me: null,
+    view: 'overview',
+    date: today(),
+    periodId: 'L',
+    status: 0,
+    deptId: '',
+    periods: [],
+    depts: [],
+    menuDate: today(),
+    menuPeriod: 'L',
+    month: today().slice(0, 7),
+  };
+
+  const STATUS_OPTIONS = [
+    [0, '全部状态'], [1, '已报餐'], [2, '已取消'], [3, '逾期待审'], [4, '管理员代报'],
+  ];
+  const TYPE_TEXT = { 1: '逾期补报', 2: '逾期撤销', 3: '逾期修改' };
+  const DAYTYPE_TEXT = { 1: '工作日', 2: '周末', 3: '节假日', 4: '调休上班' };
+
+  function modal(html) {
+    const host = $('modalHost');
+    host.innerHTML = `<div class="sheet-mask"><div class="sheet">${html}</div></div>`;
+    host.querySelector('.sheet-mask').addEventListener('click', (e) => {
+      if (e.target.classList.contains('sheet-mask')) host.innerHTML = '';
+    });
+    return host.querySelector('.sheet');
+  }
+  const closeModal = () => { $('modalHost').innerHTML = ''; };
+
+  function periodName(id) {
+    return state.periods.find((p) => p.id === id)?.name || id;
+  }
+
+  function pageHead(title, desc, actions = '') {
+    return `<div class="main-head">
+      <div><h1>${esc(title)}</h1><p>${esc(desc)}</p></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${actions}</div>
+    </div>`;
+  }
+
+  function opts(list, selected) {
+    return list.map(([v, label]) => `<option value="${v}" ${String(v) === String(selected) ? 'selected' : ''}>${esc(label)}</option>`).join('');
+  }
+
+  async function init() {
+    try {
+      const me = await api('/api/me');
+      if (!me.user) { location.replace('/login'); return; }
+      if (me.user.role === 'staff') { location.replace('/app'); return; }
+      state.me = me.user;
+      $('whoName').textContent = me.user.name;
+      $('whoDept').textContent = me.user.deptName;
+
+      $('logoutBtn').addEventListener('click', async () => {
+        await api('/api/logout', { method: 'POST' }).catch(() => {});
+        location.replace('/login');
+      });
+
+      const home = await api(`/api/home?date=${today()}`);
+      state.periods = home.periods.map((p) => ({ id: p.id, name: p.name }));
+      state.periodId = state.periods.find((p) => p.id === 'L')?.id || state.periods[0]?.id || 'L';
+      state.menuPeriod = state.periodId;
+
+      if (me.user.role === 'manager' || me.user.role === 'admin') {
+        const r = await api('/api/admin/rules');
+        state.depts = r.depts || [];
+      } else {
+        document.querySelectorAll('.side a[data-view="menus"],.side a[data-view="rules"],.side a[data-view="calendar"],.side a[data-view="exceptions"],.side a[data-view="logs"]').forEach((a) => a.remove());
+      }
+      if (me.user.role !== 'admin') document.querySelector('.side a[data-view="logs"]')?.remove();
+
+      document.querySelectorAll('.side a[data-view]').forEach((a) => {
+        a.addEventListener('click', () => {
+          document.querySelectorAll('.side a').forEach((x) => x.classList.toggle('active', x === a));
+          state.view = a.dataset.view;
+          render();
+        });
+      });
+
+      render();
+    } catch (e) {
+      $('main').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  function render() {
+    const map = {
+      overview: renderOverview, orders: renderOrders, exceptions: renderExceptions, stats: renderStats,
+      menus: renderMenus, rules: renderRules, calendar: renderCalendar, logs: renderLogs,
+    };
+    (map[state.view] || renderOverview)();
+  }
+
+  /* ------------------------------ 看板 ------------------------------ */
+  async function renderOverview() {
+    const main = $('main');
+    main.innerHTML = pageHead('今日看板', '各餐次报餐人数与待办事项', '<button class="btn" id="refresh">刷新</button>') + '<div id="ovBody"><div class="empty">加载中…</div></div>';
+    $('refresh').addEventListener('click', renderOverview);
+    try {
+      const [ov, lunch] = await Promise.all([
+        api(`/api/admin/overview?date=${state.date}`),
+        api(`/api/admin/stats?date=${state.date}&periodId=${state.periodId}`),
+      ]);
+      const max = Math.max(1, ...lunch.byDept.map((d) => d.count));
+      main.querySelector('#ovBody').innerHTML = `
+        <div class="kpis">
+          <div class="kpi"><div class="k">今日报餐</div><div class="v">${ov.total}</div><div class="s">人次（不含已取消）</div></div>
+          <div class="kpi"><div class="k">待审异常</div><div class="v">${ov.pending}</div><div class="s">条待处理申请</div></div>
+          <div class="kpi"><div class="k">午餐人数</div><div class="v">${ov.byPeriod.find((p) => p.periodId === 'L')?.total ?? 0}</div><div class="s">截止前可调整</div></div>
+          <div class="kpi"><div class="k">晚餐人数</div><div class="v">${ov.byPeriod.find((p) => p.periodId === 'D')?.total ?? 0}</div><div class="s">按部门统计</div></div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <h3>各餐次汇总 <span class="muted" style="font-weight:400;font-size:12px">${esc(state.date)}</span></h3>
+            <div class="tbl-wrap"><table class="tbl">
+              <thead><tr><th>餐次</th><th>截止时间</th><th>报餐人数</th><th>份数</th></tr></thead>
+              <tbody>${ov.byPeriod.map((p) => `<tr><td>${esc(p.periodName)}</td><td class="mono">${esc(p.deadline)}</td><td>${p.total}</td><td>${p.qty}</td></tr>`).join('')}</tbody>
+            </table></div>
+          </div>
+          <div class="card">
+            <h3>${esc(periodName(state.periodId))}部门分布</h3>
+            <div class="bars">
+              ${lunch.byDept.length ? lunch.byDept.map((d) => `<div class="bar-row"><span>${esc(d.deptName)}</span><div class="bar-track"><div class="bar-fill" style="width:${(d.count / max * 100).toFixed(0)}%"></div></div><span class="num">${d.count} 人 / ${d.qty} 份</span></div>`).join('') : '<div class="empty">暂无报餐</div>'}
+            </div>
+          </div>
+        </div>`;
+    } catch (e) {
+      main.querySelector('#ovBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  /* ------------------------------ 明细 ------------------------------ */
+  async function renderOrders() {
+    const main = $('main');
+    const canProxy = state.me.role === 'manager' || state.me.role === 'admin';
+    main.innerHTML = pageHead('报餐明细', '按日期、餐次与状态查询，可代报或取消', canProxy ? '<button class="btn primary" id="proxyBtn">代报 / 补报</button>' : '') + `
+      <div class="toolbar">
+        <div class="field"><label>日期</label><input class="input" type="date" id="fDate" value="${state.date}"></div>
+        <div class="field"><label>餐次</label><select class="select" id="fPeriod">${state.periods.map((p) => `<option value="${p.id}" ${p.id === state.periodId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>状态</label><select class="select" id="fStatus">${opts(STATUS_OPTIONS, state.status)}</select></div>
+        <button class="btn" id="queryBtn">查询</button>
+      </div>
+      <div class="card" id="orderBody"><div class="empty">加载中…</div></div>`;
+    $('queryBtn').addEventListener('click', () => {
+      state.date = $('fDate').value || today();
+      state.periodId = $('fPeriod').value;
+      state.status = Number($('fStatus').value);
+      renderOrders();
+    });
+    if (canProxy) $('proxyBtn').addEventListener('click', openProxy);
+    try {
+      const data = await api(`/api/admin/orders?date=${state.date}&periodId=${state.periodId}&status=${state.status}`);
+      const rows = data.orders;
+      main.querySelector('#orderBody').innerHTML = rows.length ? `<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>姓名</th><th>部门</th><th>餐次</th><th>状态</th><th>份数</th><th>备注</th><th>提交时间</th>${canProxy ? '<th>操作</th>' : ''}</tr></thead>
+        <tbody>${rows.map((o) => `<tr>
+          <td>${esc(o.userName)}</td><td>${esc(o.deptName)}</td><td>${esc(o.periodName)}</td>
+          <td>${statusTag(o.status)}</td><td>${o.qty}</td><td>${esc(o.remark || '—')}</td>
+          <td class="mono" style="font-size:12px">${esc(o.submitTime || '—')}</td>
+          ${canProxy ? `<td class="ops">${o.status === 1 || o.status === 4 ? `<button class="btn sm danger" data-cancel="${o.id}">取消</button>` : ''}</td>` : ''}
+        </tr>`).join('')}</tbody></table></div>` : '<div class="empty">该条件下暂无报餐</div>';
+      main.querySelectorAll('[data-cancel]').forEach((b) => b.addEventListener('click', async () => {
+        if (!confirm('确认取消该条报餐吗？')) return;
+        try { await api('/api/admin/orders/cancel', { method: 'POST', body: { orderId: b.dataset.cancel } }); toast('已取消'); renderOrders(); }
+        catch (e) { toast(e.message); }
+      }));
+    } catch (e) {
+      main.querySelector('#orderBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  async function openProxy() {
+    const sheet = modal(`<h3>代报 / 补报</h3>
+      <div class="field"><label>报餐人</label><select class="select" id="pUser"></select></div>
+      <div class="field"><label>日期</label><input class="input" type="date" id="pDate" value="${state.date}"></div>
+      <div class="field"><label>餐次</label><select class="select" id="pPeriod">${state.periods.map((p) => `<option value="${p.id}" ${p.id === state.periodId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>份数</label><input class="input" type="number" id="pQty" value="1" min="1" max="5"></div>
+      <div class="field"><label>备注</label><input class="input" id="pRemark" placeholder="管理员代报原因（选填）"></div>
+      <div class="actions"><button class="btn" id="pCancel">取消</button><button class="btn primary" id="pOk">确认代报</button></div>`);
+    sheet.querySelector('#pCancel').addEventListener('click', closeModal);
+    try {
+      const { users } = await api('/api/admin/users');
+      sheet.querySelector('#pUser').innerHTML = users
+        .filter((u) => u.role !== 'admin')
+        .map((u) => `<option value="${u.id}">${esc(u.name)} · ${esc(u.deptName)}</option>`).join('');
+    } catch (e) { toast(e.message); }
+    sheet.querySelector('#pOk').addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        await api('/api/admin/proxy', {
+          method: 'POST',
+          body: {
+            userId: sheet.querySelector('#pUser').value,
+            date: sheet.querySelector('#pDate').value,
+            periodId: sheet.querySelector('#pPeriod').value,
+            qty: Number(sheet.querySelector('#pQty').value),
+            remark: sheet.querySelector('#pRemark').value,
+          },
+        });
+        closeModal(); toast('代报成功'); renderOrders();
+      } catch (err) { e.currentTarget.disabled = false; toast(err.message); }
+    });
+  }
+
+  /* ------------------------------ 异常 ------------------------------ */
+  async function renderExceptions() {
+    const main = $('main');
+    main.innerHTML = pageHead('异常报餐处理', '审核逾期补报、撤销与修改申请') + '<div class="card" id="excBody"><div class="empty">加载中…</div></div>';
+    try {
+      const { exceptions } = await api('/api/admin/exceptions');
+      const pending = exceptions.filter((e) => e.status === 1);
+      const handled = exceptions.filter((e) => e.status !== 1);
+      main.querySelector('#excBody').innerHTML = `
+        <h3>待处理 <span class="tag warn">${pending.length}</span></h3>
+        ${pending.length ? `<div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>申请人</th><th>部门</th><th>日期</th><th>餐次</th><th>类型</th><th>原因</th><th>提交时间</th><th>操作</th></tr></thead>
+          <tbody>${pending.map((e) => `<tr>
+            <td>${esc(e.userName)}</td><td>${esc(e.deptName)}</td><td>${esc(e.date)}</td><td>${esc(periodName(e.periodId))}</td>
+            <td>${esc(TYPE_TEXT[e.applyType] || '—')}</td><td>${esc(e.reason)}</td><td class="mono" style="font-size:12px">${esc(e.createTime)}</td>
+            <td class="ops"><button class="btn sm" data-audit="${e.id}" data-ok="1">通过</button> <button class="btn sm danger" data-audit="${e.id}" data-ok="0">驳回</button></td>
+          </tr>`).join('')}</tbody></table></div>` : '<div class="empty">没有待处理申请</div>'}
+        <h3 style="margin-top:24px">已处理</h3>
+        ${handled.length ? `<div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>申请人</th><th>日期</th><th>餐次</th><th>类型</th><th>结果</th><th>审核人</th><th>审核时间</th></tr></thead>
+          <tbody>${handled.slice(0, 50).map((e) => `<tr>
+            <td>${esc(e.userName)}</td><td>${esc(e.date)}</td><td>${esc(periodName(e.periodId))}</td>
+            <td>${esc(TYPE_TEXT[e.applyType] || '—')}</td><td>${e.status === 2 ? '<span class="tag ok">已通过</span>' : '<span class="tag danger">已驳回</span>'}</td>
+            <td>${esc(e.auditorName || '—')}</td><td class="mono" style="font-size:12px">${esc(e.auditTime || '—')}</td>
+          </tr>`).join('')}</tbody></table></div>` : '<div class="empty">暂无历史记录</div>'}`;
+
+      main.querySelectorAll('[data-audit]').forEach((b) => b.addEventListener('click', () => {
+        const ok = b.dataset.ok === '1';
+        const row = pending.find((e) => e.id === b.dataset.audit);
+        const sheet = modal(`<h3>${ok ? '通过' : '驳回'}申请</h3>
+          <div class="muted" style="font-size:13px;margin-bottom:14px">${esc(row.userName)} · ${esc(row.date)} ${esc(periodName(row.periodId))} · ${esc(TYPE_TEXT[row.applyType])}</div>
+          <div class="field"><label>审核意见</label><textarea class="textarea" id="auditRemark" placeholder="选填"></textarea></div>
+          <div class="actions"><button class="btn" id="aCancel">取消</button><button class="btn ${ok ? 'primary' : 'danger'}" id="aOk">确认${ok ? '通过' : '驳回'}</button></div>`);
+        sheet.querySelector('#aCancel').addEventListener('click', closeModal);
+        sheet.querySelector('#aOk').addEventListener('click', async (e) => {
+          e.currentTarget.disabled = true;
+          try {
+            await api('/api/admin/exceptions/audit', { method: 'POST', body: { exceptionId: row.id, approve: ok, remark: sheet.querySelector('#auditRemark').value } });
+            closeModal(); toast(ok ? '已通过' : '已驳回'); renderExceptions();
+          } catch (err) { e.currentTarget.disabled = false; toast(err.message); }
+        });
+      }));
+    } catch (e) {
+      main.querySelector('#excBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  /* ------------------------------ 统计 ------------------------------ */
+  async function renderStats() {
+    const main = $('main');
+    const canExport = state.me.role === 'manager' || state.me.role === 'admin';
+    main.innerHTML = pageHead('汇总统计', '按部门 / 日期 / 餐次统计报餐人数', canExport ? '<button class="btn" id="expSummary">导出汇总</button><button class="btn" id="expDetail">导出明细</button>' : '') + `
+      <div class="toolbar">
+        <div class="field"><label>日期</label><input class="input" type="date" id="sDate" value="${state.date}"></div>
+        <div class="field"><label>餐次</label><select class="select" id="sPeriod">${state.periods.map((p) => `<option value="${p.id}" ${p.id === state.periodId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+        <button class="btn" id="sQuery">统计</button>
+      </div>
+      <div class="card" id="statBody"><div class="empty">加载中…</div></div>`;
+
+    const load = async () => {
+      const d = $('sDate').value || today();
+      const p = $('sPeriod').value;
+      state.date = d; state.periodId = p;
+      try {
+        const s = await api(`/api/admin/stats?date=${d}&periodId=${p}`);
+        const max = Math.max(1, ...s.byDept.map((x) => x.count));
+        $('statBody').innerHTML = `
+          <h3>${esc(d)} · ${esc(periodName(p))} <span class="muted" style="font-weight:400;font-size:12px">共 ${s.total} 人 / ${s.qty} 份</span></h3>
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th style="width:140px">部门</th><th>人数分布</th><th>报餐人数</th><th>份数</th></tr></thead>
+            <tbody>${s.byDept.map((x) => `<tr><td>${esc(x.deptName)}</td>
+              <td><div class="bar-track"><div class="bar-fill" style="width:${(x.count / max * 100).toFixed(0)}%"></div></div></td>
+              <td>${x.count}</td><td>${x.qty}</td></tr>`).join('')}
+              <tr><td><b>合计</b></td><td></td><td><b>${s.total}</b></td><td><b>${s.qty}</b></td></tr>
+            </tbody></table></div>`;
+      } catch (e) {
+        $('statBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      }
+    };
+    $('sQuery').addEventListener('click', load);
+    if (canExport) {
+      $('expSummary').addEventListener('click', () => {
+        window.open(`/api/admin/export?type=summary&date=${state.date}&periodId=${state.periodId}`, '_blank');
+      });
+      $('expDetail').addEventListener('click', () => {
+        window.open(`/api/admin/export?type=detail&date=${state.date}&periodId=${state.periodId}`, '_blank');
+      });
+    }
+    await load();
+  }
+
+  /* ------------------------------ 菜单 ------------------------------ */
+  async function renderMenus() {
+    const main = $('main');
+    main.innerHTML = pageHead('菜单维护', '按日期与餐次维护菜品，发布后职工才可报餐') + `
+      <div class="toolbar">
+        <div class="field"><label>日期</label><input class="input" type="date" id="mDate" value="${state.menuDate}"></div>
+        <div class="field"><label>餐次</label><select class="select" id="mPeriod">${state.periods.map((p) => `<option value="${p.id}" ${p.id === state.menuPeriod ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+        <button class="btn" id="mLoad">加载</button>
+      </div>
+      <div class="card" id="menuBody"><div class="empty">加载中…</div></div>`;
+
+    const load = async () => {
+      state.menuDate = $('mDate').value || today();
+      state.menuPeriod = $('mPeriod').value;
+      try {
+        const data = await api(`/api/admin/menus?date=${state.menuDate}`);
+        const menu = data.menus.find((m) => m.periodId === state.menuPeriod) || {
+          date: state.menuDate, periodId: state.menuPeriod, title: `${state.menuDate} ${periodName(state.menuPeriod)}`, status: 1, items: [],
+        };
+        const statusText = menu.status === 2 ? '<span class="tag ok">已发布</span>' : menu.status === 3 ? '<span class="tag gray">已停用</span>' : '<span class="tag warn">草稿</span>';
+        $('menuBody').innerHTML = `
+          <h3>${esc(periodName(state.menuPeriod))}菜单 ${statusText}</h3>
+          <div class="field" style="margin-bottom:14px"><label>菜单标题</label><input class="input" id="mTitle" value="${esc(menu.title || '')}" maxlength="60"></div>
+          <div class="field" style="margin-bottom:10px"><label>菜品</label>
+            <div class="dish-editor" id="dishEditor">
+              ${(menu.items.length ? menu.items : [{ name: '', type: '主荤' }]).map((i) => `
+                <div class="dish-line">
+                  <input class="input" data-name value="${esc(i.name || '')}" placeholder="菜名">
+                  <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜'].map((t) => `<option ${t === i.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+                  <button type="button" data-del>×</button>
+                </div>`).join('')}
+            </div>
+          </div>
+          <button class="btn sm" id="addDish" style="margin-bottom:18px">+ 添加菜品</button>
+          <div class="actions" style="max-width:520px">
+            <button class="btn" id="saveMenu">保存</button>
+            <button class="btn primary" id="publishMenu">${menu.status === 2 ? '已发布（重新发布）' : '发布'}</button>
+            ${menu.status === 2 ? '<button class="btn danger" id="stopMenu">停用</button>' : ''}
+          </div>`;
+
+        $('addDish').addEventListener('click', () => addDishLine());
+        $('menuBody').querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
+          const lines = $('dishEditor').querySelectorAll('.dish-line');
+          if (lines.length > 1) b.closest('.dish-line').remove();
+        }));
+        $('saveMenu').addEventListener('click', async () => {
+          const items = [...$('dishEditor').querySelectorAll('.dish-line')].map((line) => ({
+            name: line.querySelector('[data-name]').value.trim(),
+            type: line.querySelector('[data-type]').value,
+          })).filter((i) => i.name);
+          try {
+            await api('/api/admin/menus/save', { method: 'POST', body: { date: state.menuDate, periodId: state.menuPeriod, title: $('mTitle').value, items } });
+            toast('菜单已保存'); load();
+          } catch (e) { toast(e.message); }
+        });
+        $('publishMenu').addEventListener('click', async () => {
+          try {
+            await api('/api/admin/menus/publish', { method: 'POST', body: { date: state.menuDate, periodId: state.menuPeriod, status: 2 } });
+            toast('菜单已发布'); load();
+          } catch (e) { toast(e.message); }
+        });
+        $('stopMenu')?.addEventListener('click', async () => {
+          if (!confirm('停用后职工将无法继续报餐，确认吗？')) return;
+          try {
+            await api('/api/admin/menus/publish', { method: 'POST', body: { date: state.menuDate, periodId: state.menuPeriod, status: 3 } });
+            toast('菜单已停用'); load();
+          } catch (e) { toast(e.message); }
+        });
+      } catch (e) {
+        $('menuBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      }
+    };
+
+    function addDishLine() {
+      const div = document.createElement('div');
+      div.className = 'dish-line';
+      div.innerHTML = `<input class="input" data-name placeholder="菜名">
+        <select class="select" data-type>${['主荤', '素菜', '汤羹', '主食', '水果', '配菜'].map((t) => `<option>${t}</option>`).join('')}</select>
+        <button type="button" data-del>×</button>`;
+      div.querySelector('[data-del]').addEventListener('click', () => {
+        if ($('dishEditor').querySelectorAll('.dish-line').length > 1) div.remove();
+      });
+      $('dishEditor').appendChild(div);
+    }
+
+    $('mLoad').addEventListener('click', load);
+    await load();
+  }
+
+  /* ------------------------------ 规则 ------------------------------ */
+  async function renderRules() {
+    const main = $('main');
+    main.innerHTML = pageHead('报餐规则', '全局规则与部门覆盖，部门优先') + '<div class="card" id="ruleBody"><div class="empty">加载中…</div></div>';
+    try {
+      const data = await api('/api/admin/rules');
+      const global = data.rules.find((r) => r.scopeType === 1) || { advanceDays: 7, allowModify: 1, allowCancel: 1, overduePolicy: 1, maxQtyPerMeal: 1 };
+      const overrides = data.rules.filter((r) => r.scopeType === 2);
+      $('ruleBody').innerHTML = `
+        <h3>全局规则</h3>
+        <div class="rule-form" style="margin-bottom:18px">
+          <div class="field"><label>最多提前天数</label><input class="input" type="number" id="rAdvance" min="0" max="30" value="${global.advanceDays}"></div>
+          <div class="field"><label>单餐最多份数</label><input class="input" type="number" id="rQty" min="1" max="10" value="${global.maxQtyPerMeal}"></div>
+          <div class="field"><label>逾期策略</label><select class="select" id="rOverdue">${opts([[1, '需申请审核'], [0, '直接拒绝'], [2, '管理员可代报']], global.overduePolicy)}</select></div>
+          <div class="field" style="justify-content:flex-end;gap:10px">
+            <label class="check"><input type="checkbox" id="rModify" ${global.allowModify ? 'checked' : ''}> 允许截止前修改</label>
+            <label class="check"><input type="checkbox" id="rCancel" ${global.allowCancel ? 'checked' : ''}> 允许截止前取消</label>
+          </div>
+        </div>
+        <button class="btn primary" id="saveGlobal">保存全局规则</button>
+
+        <h3 style="margin-top:28px">部门覆盖</h3>
+        <div class="toolbar">
+          <div class="field"><label>部门</label><select class="select" id="ovDept">${state.depts.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+          <div class="field"><label>最多提前天数</label><input class="input" type="number" id="ovAdvance" min="0" max="30" value="${global.advanceDays}"></div>
+          <div class="field"><label>单餐份数</label><input class="input" type="number" id="ovQty" min="1" max="10" value="${global.maxQtyPerMeal}"></div>
+          <div class="field"><label>&nbsp;</label><label class="check" style="height:40px"><input type="checkbox" id="ovCancel" checked> 允许取消</label></div>
+          <button class="btn" id="saveOverride">保存部门规则</button>
+        </div>
+        ${overrides.length ? `<div class="tbl-wrap" style="margin-top:12px"><table class="tbl">
+          <thead><tr><th>部门</th><th>提前天数</th><th>单餐份数</th><th>允许取消</th><th>逾期策略</th></tr></thead>
+          <tbody>${overrides.map((r) => `<tr><td>${esc(state.depts.find((d) => d.id === r.deptId)?.name || r.deptId)}</td><td>${r.advanceDays}</td><td>${r.maxQtyPerMeal}</td><td>${r.allowCancel ? '是' : '否'}</td><td>${r.overduePolicy === 0 ? '直接拒绝' : r.overduePolicy === 2 ? '管理员代报' : '需申请审核'}</td></tr>`).join('')}</tbody>
+        </table></div>` : '<div class="empty">暂无部门覆盖</div>'}
+
+        <h3 style="margin-top:28px">餐次与截止时间</h3>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>餐次</th><th>供餐时段</th><th>报餐截止</th><th>状态</th></tr></thead>
+          <tbody>${data.periods.map((p) => `<tr><td>${esc(p.periodName)}</td><td class="mono">${esc(p.serveStart)}-${esc(p.serveEnd)}</td><td class="mono">${esc(p.deadlineTime)}</td><td>${p.status === 1 ? '启用' : '停用'}</td></tr>`).join('')}</tbody>
+        </table></div>`;
+
+      $('saveGlobal').addEventListener('click', async () => {
+        try {
+          await api('/api/admin/rules/save', { method: 'POST', body: {
+            scopeType: 1, advanceDays: Number($('rAdvance').value), maxQtyPerMeal: Number($('rQty').value),
+            overduePolicy: Number($('rOverdue').value), allowModify: $('rModify').checked, allowCancel: $('rCancel').checked,
+          } });
+          toast('全局规则已保存'); renderRules();
+        } catch (e) { toast(e.message); }
+      });
+      $('saveOverride').addEventListener('click', async () => {
+        try {
+          await api('/api/admin/rules/save', { method: 'POST', body: {
+            scopeType: 2, deptId: $('ovDept').value, advanceDays: Number($('ovAdvance').value),
+            maxQtyPerMeal: Number($('ovQty').value), allowCancel: $('ovCancel').checked,
+            allowModify: 1, overduePolicy: 1,
+          } });
+          toast('部门规则已保存'); renderRules();
+        } catch (e) { toast(e.message); }
+      });
+    } catch (e) {
+      $('ruleBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  /* ------------------------------ 日历 ------------------------------ */
+  async function renderCalendar() {
+    const main = $('main');
+    main.innerHTML = pageHead('工作日历', '标记节假日与调休，决定哪些日期可以报餐') + `
+      <div class="toolbar">
+        <div class="field"><label>月份</label><input class="input" type="month" id="cMonth" value="${state.month}"></div>
+        <button class="btn" id="cLoad">加载</button>
+      </div>
+      <div class="card" id="calBody"><div class="empty">加载中…</div></div>`;
+
+    const load = async () => {
+      state.month = $('cMonth').value || today().slice(0, 7);
+      try {
+        const { calendar } = await api(`/api/admin/calendar?month=${state.month}`);
+        $('calBody').innerHTML = calendar.length ? `<div class="cal-list">${calendar.map((c) => `
+          <div class="cal-row" data-date="${c.date}">
+            <span class="date">${esc(c.date)} ${weekdayName(c.date)}</span>
+            <select class="select" data-daytype>${opts(Object.entries(DAYTYPE_TEXT), c.dayType)}</select>
+            <label class="check"><input type="checkbox" data-meal ${c.isMealDay ? 'checked' : ''}> 供餐</label>
+            <input class="input" data-remark value="${esc(c.remark || '')}" placeholder="备注">
+            <button class="btn sm" data-save>保存</button>
+          </div>`).join('')}</div>` : '<div class="empty">该月份暂无日历数据</div>';
+
+        $('calBody').querySelectorAll('[data-save]').forEach((b) => b.addEventListener('click', async () => {
+          const row = b.closest('.cal-row');
+          try {
+            await api('/api/admin/calendar/save', { method: 'POST', body: {
+              date: row.dataset.date,
+              dayType: Number(row.querySelector('[data-daytype]').value),
+              isMealDay: row.querySelector('[data-meal]').checked,
+              remark: row.querySelector('[data-remark]').value,
+            } });
+            toast(`${row.dataset.date} 已保存`);
+          } catch (e) { toast(e.message); }
+        }));
+      } catch (e) {
+        $('calBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      }
+    };
+    $('cLoad').addEventListener('click', load);
+    await load();
+  }
+
+  /* ------------------------------ 日志 ------------------------------ */
+  async function renderLogs() {
+    const main = $('main');
+    main.innerHTML = pageHead('操作日志', '报餐、审核、配置与导出的完整留痕') + '<div class="card" id="logBody"><div class="empty">加载中…</div></div>';
+    try {
+      const { logs } = await api('/api/admin/logs?limit=100');
+      $('logBody').innerHTML = logs.length ? `<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>时间</th><th>操作人</th><th>角色</th><th>动作</th><th>关联单据</th><th>来源 IP</th></tr></thead>
+        <tbody>${logs.map((l) => `<tr>
+          <td class="mono" style="font-size:12px">${esc(l.createTime)}</td><td>${esc(l.operatorName)}</td><td>${esc(l.operatorRole)}</td>
+          <td>${esc(l.action)}</td><td class="mono" style="font-size:12px">${esc(l.orderId || l.exceptionId || '—')}</td><td class="mono" style="font-size:12px">${esc(l.clientIp || '—')}</td>
+        </tr>`).join('')}</tbody></table></div>` : '<div class="empty">暂无日志</div>';
+    } catch (e) {
+      $('logBody').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  init();
+</script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>登录 · 内部报餐系统</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">内部报餐系统</div>
+    <div class="sub">机关单位食堂 · 职工报餐与用餐管理</div>
+
+    <form id="form" autocomplete="on">
+      <div class="field">
+        <label for="account">工号</label>
+        <input class="input" id="account" name="account" placeholder="请输入工号" required autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input class="input" id="password" name="password" type="password" placeholder="请输入密码" required autocomplete="current-password">
+      </div>
+      <div class="login-err" id="err"></div>
+      <button class="btn primary block" type="submit" id="submit">登 录</button>
+    </form>
+
+    <div class="demo">
+      <div>演示账号（密码均为 <b>123456</b>）</div>
+      <div>职工：<button data-a="1001">1001 张伟</button> · <button data-a="1002">1002 李娜</button></div>
+      <div>管理员：<button data-a="9001">9001 食堂管理员</button> · <button data-a="9999">9999 系统管理员</button></div>
+    </div>
+  </div>
+</div>
+<div class="login-hint"></div>
+<script type="module">
+  import { api } from '/assets/api.js';
+
+  const form = document.getElementById('form');
+  const err = document.getElementById('err');
+  const submit = document.getElementById('submit');
+
+  document.querySelectorAll('.demo button').forEach((b) => {
+    b.addEventListener('click', () => {
+      document.getElementById('account').value = b.dataset.a;
+      document.getElementById('password').value = '123456';
+      err.textContent = '';
+    });
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    submit.disabled = true;
+    submit.textContent = '登录中…';
+    try {
+      const data = await api('/api/login', {
+        method: 'POST',
+        body: { account: document.getElementById('account').value.trim(), password: document.getElementById('password').value },
+      });
+      const role = data.user?.role;
+      location.replace(role === 'staff' ? '/app' : '/admin');
+    } catch (e2) {
+      err.textContent = e2.message;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = '登 录';
+    }
+  });
+</script>
+</body>
+</html>
