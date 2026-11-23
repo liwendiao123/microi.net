@@ -1,0 +1,16 @@
+{
+  "name": "meal-ordering",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "机关单位内部报餐系统（Web MVP）",
+  "scripts": {
+    "seed": "node seed.js",
+    "start": "node server.js",
+    "dev": "node seed.js && node server.js",
+    "test": "node tests/smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
