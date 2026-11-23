@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>报餐 · 内部报餐系统</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div class="app-shell">
+  <header class="app-head">
+    <div class="row">
+      <div>
+        <div class="hi">您好</div>
+        <div class="name" id="userName">—</div>
+        <div class="dept" id="userDept"></div>
+      </div>
+      <button class="btn sm ghost" id="switchBtn" style="color:#fff;border-color:rgba(255,255,255,.32)">切换</button>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <section id="view-home">
+      <div class="panel" style="padding:14px 14px 10px">
+        <div class="date-strip" id="dateStrip"></div>
+        <div class="period-tabs" id="periodTabs"></div>
+      </div>
+      <div id="homeContent"></div>
+    </section>
+
+    <section id="view-records" class="hidden">
+      <div class="panel">
+        <h3>我的报餐记录</h3>
+        <div id="recordList"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section id="view-mine" class="hidden">
+      <div class="panel">
+        <h3>个人信息</h3>
+        <div id="profileBox"></div>
+      </div>
+      <div class="panel">
+        <h3>报餐规则</h3>
+        <div id="ruleBox" class="muted" style="font-size:13.5px"></div>
+      </div>
+      <div class="panel">
+        <button class="btn block danger" id="logoutBtn">退出登录</button>
+      </div>
+    </section>
+  </div>
+
+  <nav class="tabbar">
+    <button data-tab="home" class="active"><span class="ic">🍚</span>报餐</button>
+    <button data-tab="records"><span class="ic">📋</span>记录</button>
+    <button data-tab="mine"><span class="ic">👤</span>我的</button>
+  </nav>
+</div>
+<div id="sheetHost"></div>
+
+<script type="module">
+  import { api, toast, STATUS_TEXT, statusTag, today, addDays, weekdayName, esc } from '/assets/api.js';
+
+  const state = { user: null, date: today(), activePeriod: null, home: null, tab: 'home' };
+
+  const $ = (id) => document.getElementById(id);
+  const DAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const money = (n) => (Number(n) || 0).toFixed(2);
+
+  function openSheet(html) {
+    const host = $('sheetHost');
+    host.innerHTML = `<div class="sheet-mask"><div class="sheet">${html}</div></div>`;
+    host.querySelector('.sheet-mask').addEventListener('click', (e) => {
+      if (e.target.classList.contains('sheet-mask')) closeSheet();
+    });
+    return host.querySelector('.sheet');
+  }
+  function closeSheet() { $('sheetHost').innerHTML = ''; }
+
+  async function init() {
+    try {
+      const me = await api('/api/me');
+      if (!me.user) { location.replace('/login'); return; }
+      state.user = me.user;
+      $('userName').textContent = me.user.name;
+      $('userDept').textContent = me.user.deptName;
+    } catch { location.replace('/login'); return; }
+
+    const w = new Date(`${state.date}T00:00:00Z`).getUTCDay();
+    if (w === 0 || w === 6) {
+      // 周末默认展示下周一，避免首页空着。
+    }
+    renderDateStrip();
+    await loadHome();
+    bindTabs();
+    setInterval(() => { if (state.tab === 'home') loadHome(true); }, 60000);
+  }
+
+  function renderDateStrip() {
+    const wrap = $('dateStrip');
+    const start = today();
+    wrap.innerHTML = Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(start, i);
+      const label = DAY_NAMES[new Date(`${d}T00:00:00Z`).getUTCDay()].replace('周', '');
+      return `<div class="date-chip ${d === state.date ? 'active' : ''}" data-date="${d}">
+        <div class="d">${i === 0 ? '今天' : '周' + label}</div>
+        <div class="n">${d.slice(8)}</div>
+      </div>`;
+    }).join('');
+    wrap.querySelectorAll('.date-chip').forEach((el) => {
+      el.addEventListener('click', () => {
+        state.date = el.dataset.date;
+        state.activePeriod = null;
+        renderDateStrip();
+        loadHome();
+      });
+    });
+  }
+
+  async function loadHome(silent = false) {
+    try {
+      const data = await api(`/api/home?date=${state.date}`);
+      state.home = data;
+      if (!state.activePeriod || !data.periods.some((p) => p.id === state.activePeriod)) {
+        const preferred = data.periods.find((p) => p.menu && p.canOrder) || data.periods[1] || data.periods[0];
+        state.activePeriod = preferred?.id || data.periods[0]?.id;
+      }
+      renderPeriodTabs();
+      renderHome();
+    } catch (e) {
+      if (!silent) toast(e.message);
+    }
+  }
+
+  function renderPeriodTabs() {
+    const wrap = $('periodTabs');
+    wrap.innerHTML = (state.home?.periods || []).map((p) =>
+      `<div class="period-tab ${p.id === state.activePeriod ? 'active' : ''}" data-p="${p.id}">${p.name}</div>`,
+    ).join('');
+    wrap.querySelectorAll('.period-tab').forEach((el) => {
+      el.addEventListener('click', () => { state.activePeriod = el.dataset.p; renderPeriodTabs(); renderHome(); });
+    });
+  }
+
+  function renderHome() {
+    const box = $('homeContent');
+    const data = state.home;
+    if (!data) { box.innerHTML = '<div class="panel"><div class="empty">加载中…</div></div>'; return; }
+    if (!data.isMealDay) {
+      box.innerHTML = `<div class="panel"><div class="empty">${esc(state.date)} ${weekdayName(state.date)} 不供餐<br><span style="font-size:12.5px">${esc(data.calendar?.remark || '周末或节假日')}</span></div></div>`;
+      return;
+    }
+    const p = data.periods.find((x) => x.id === state.activePeriod);
+    if (!p) { box.innerHTML = ''; return; }
+
+    if (!p.menu) {
+      box.innerHTML = `<div class="panel">
+        <h3>${esc(p.name)}</h3>
+        <div class="empty">菜单尚未发布<br><span style="font-size:12.5px">请等待食堂管理员发布后再报餐</span></div>
+      </div>`;
+      return;
+    }
+
+    if (p.menu.status !== 2) {
+      box.innerHTML = `<div class="panel">
+        <h3>${esc(p.name)} · ${esc(p.menu.title || '菜单')}</h3>
+        <div class="empty">菜单处于${p.menu.status === 1 ? '草稿' : '停用'}状态，暂不可报餐</div>
+      </div>`;
+      return;
+    }
+
+    const order = p.order;
+    let banner = '';
+    if (order) {
+      const dishLine = order.dishNames ? `<div class="rec-meta">${esc(order.dishNames)}</div>` : '';
+      const payLine = order.selfPayAmount > 0 ? `<div class="pay-text">需自费 ¥${money(order.selfPayAmount)}</div>` : '';
+      if (order.status === 1 || order.status === 4) {
+        banner = `<div class="status-banner"><div>已报餐 <b>${order.qty}</b> 份${order.remark ? ` · ${esc(order.remark)}` : ''}${dishLine}${payLine}</div>${statusTag(order.status)}</div>`;
+      } else if (order.status === 3) {
+        banner = `<div class="status-banner pending"><div>逾期申请审核中，请耐心等待</div>${statusTag(order.status)}</div>`;
+      } else if (order.status === 2) {
+        banner = `<div class="status-banner cancel"><div>本次报餐已取消</div>${statusTag(order.status)}</div>`;
+      }
+    }
+
+    const actions = [];
+    if (!order || order.status === 2) {
+      actions.push(`<button class="btn primary" data-act="submit" ${p.canOrder ? '' : 'disabled'}>${order?.status === 2 ? '重新报餐' : '报餐'}</button>`);
+    } else if (order.status === 1 || order.status === 4) {
+      if (p.canOrder) actions.push('<button class="btn primary" data-act="submit">修改</button>');
+      if (p.canOrder) actions.push('<button class="btn danger" data-act="cancel">取消</button>');
+    }
+    if (!p.canOrder && (!order || order.status === 2)) {
+      actions.push('<button class="btn" data-act="exception">逾期补报申请</button>');
+    }
+    if (order && order.status !== 3 && !p.canOrder && order.status !== 2) {
+      actions.push('<button class="btn" data-act="exception">逾期撤销申请</button>');
+    }
+
+    box.innerHTML = `<div class="panel">
+      <h3>${esc(p.name)} · ${esc(p.menu.title || '菜单')}</h3>
+      <div class="deadline ${p.passed ? 'closed' : ''}">
+        <span>${p.passed ? '已截止' : '距截止'}</span>
+        <b>${p.passed ? esc(p.deadlineText) : esc(p.countdown)}</b>
+      </div>
+      ${banner}
+      <div class="dishes">
+        ${p.menu.items.map((i) => `<div class="dish ${i.free === 0 ? 'paid' : ''}"><b>${esc(i.name)}</b><span>${i.free === 0 ? '自费' : '免费'}${Number(i.price) > 0 ? ` ¥${money(i.price)}` : ''}</span></div>`).join('')}
+      </div>
+      <div class="actions">${actions.join('')}</div>
+    </div>`;
+
+    box.querySelectorAll('[data-act]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.act === 'submit') openOrderSheet(p);
+        if (btn.dataset.act === 'cancel') cancelOrder(p);
+        if (btn.dataset.act === 'exception') openExceptionSheet(p);
+      });
+    });
+  }
+
+  function openOrderSheet(p) {
+    const items = p.menu.items || [];
+    const max = state.home.rule?.maxQtyPerMeal || 1;
+    const quota = Number(state.home.rule?.freeQuota ?? 20);
+    const current = p.order;
+    const qty = current?.qty || 1;
+    const freeItems = items.filter((i) => i.free !== 0);
+    const paidItems = items.filter((i) => i.free === 0);
+    const picked = new Set(
+      Array.isArray(current?.dishIds) && current.dishIds.length ? current.dishIds : freeItems.map((i) => i.id),
+    );
+
+    const group = (title, list, hint) => (list.length ? `<div class="dish-group">
+      <div class="g-title">${title}<span>${hint}</span></div>
+      ${list.map((i) => `<label class="dish-opt">
+        <input type="checkbox" data-dish="${esc(i.id)}" ${picked.has(i.id) ? 'checked' : ''}>
+        <span class="nm">${esc(i.name)}</span>
+        <span class="ty">${esc(i.type)}</span>
+        <span class="pr">${i.free === 0 ? `<b>+¥${money(i.price)}</b>` : `¥${money(i.price)}`}</span>
+      </label>`).join('')}
+    </div>` : '');
+
+    const sheet = openSheet(`
+      <h3>${current ? '修改报餐' : '确认报餐'} · ${esc(p.name)}</h3>
+      <div class="muted" style="font-size:13px;margin:-8px 0 12px">${esc(state.date)} ${weekdayName(state.date)} · 截止 ${esc(p.deadlineText)}</div>
+      <div class="quote-tip">免费额度 <b>¥${money(quota)}</b> / 份，超出部分需自费</div>
+      ${group('免费套餐', freeItems, '已默认全选，可取消不要的菜')}
+      ${group('自费菜', paidItems, '按份加价，可自由勾选')}
+      <div class="field" style="margin-top:12px">
+        <label>份数</label>
+        <select class="select" id="qtySel">${Array.from({ length: max }, (_, i) => `<option value="${i + 1}" ${i + 1 === qty ? 'selected' : ''}>${i + 1} 份</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label>备注（选填，如忌口）</label>
+        <input class="input" id="remarkInput" maxlength="60" value="${esc(current?.remark || '')}" placeholder="少辣、不要香菜…">
+      </div>
+      <div class="quote-box">
+        <div><span>餐标合计</span><b>¥<span id="qTotal">0.00</span></b></div>
+        <div><span>需自费</span><b class="pay" id="qPay">¥0.00</b></div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="sheetCancel">取消</button>
+        <button class="btn primary" id="sheetOk">确认</button>
+      </div>
+    `);
+
+    const recalc = () => {
+      const n = Number(sheet.querySelector('#qtySel').value) || 1;
+      const ids = [...sheet.querySelectorAll('[data-dish]:checked')].map((el) => el.dataset.dish);
+      const unit = ids.reduce((s, id) => s + (Number(items.find((i) => i.id === id)?.price) || 0), 0);
+      const total = unit * n;
+      const pay = Math.max(0, total - quota * n);
+      sheet.querySelector('#qTotal').textContent = money(total);
+      sheet.querySelector('#qPay').textContent = `¥${money(pay)}`;
+      sheet.querySelector('#sheetOk').disabled = ids.length === 0;
+    };
+    sheet.querySelectorAll('[data-dish], #qtySel').forEach((el) => el.addEventListener('change', recalc));
+    recalc();
+
+    sheet.querySelector('#sheetCancel').addEventListener('click', closeSheet);
+    sheet.querySelector('#sheetOk').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const dishIds = [...sheet.querySelectorAll('[data-dish]:checked')].map((el) => el.dataset.dish);
+      try {
+        await api('/api/orders', {
+          method: 'POST',
+          body: {
+            date: state.date,
+            periodId: p.id,
+            qty: Number(sheet.querySelector('#qtySel').value),
+            dishIds,
+            remark: sheet.querySelector('#remarkInput').value,
+            idempotencyKey: crypto.randomUUID(),
+          },
+        });
+        closeSheet();
+        toast(current ? '已修改' : '报餐成功');
+        loadHome();
+      } catch (err) {
+        btn.disabled = false;
+        if (err.code === 'OVERDUE') {
+          closeSheet();
+          toast(err.message);
+          openExceptionSheet(p);
+        } else {
+          toast(err.message);
+        }
+      }
+    });
+  }
+
+  async function cancelOrder(p) {
+    if (!p.order) return;
+    if (!confirm(`确认取消 ${state.date} ${p.name} 的报餐吗？`)) return;
+    try {
+      await api('/api/orders/cancel', { method: 'POST', body: { orderId: p.order.id } });
+      toast('已取消报餐');
+      loadHome();
+    } catch (e) {
+      if (e.code === 'OVERDUE') {
+        toast(e.message);
+        openExceptionSheet(p, 2);
+      } else {
+        toast(e.message);
+      }
+    }
+  }
+
+  function openExceptionSheet(p, defaultType = 1) {
+    const sheet = openSheet(`
+      <h3>逾期申请 · ${esc(p.name)}</h3>
+      <div class="muted" style="font-size:13px;margin:-8px 0 16px">${esc(state.date)} ${weekdayName(state.date)} · 截止 ${esc(p.deadlineText)}</div>
+      <div class="field">
+        <label>申请类型</label>
+        <select class="select" id="typeSel">
+          <option value="1" ${defaultType === 1 ? 'selected' : ''}>逾期补报</option>
+          <option value="2" ${defaultType === 2 ? 'selected' : ''}>逾期撤销</option>
+          <option value="3" ${defaultType === 3 ? 'selected' : ''}>逾期修改</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>申请原因</label>
+        <textarea class="textarea" id="reasonInput" maxlength="200" placeholder="请说明原因，便于管理员审核"></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn" id="sheetCancel">取消</button>
+        <button class="btn primary" id="sheetOk">提交申请</button>
+      </div>
+    `);
+    sheet.querySelector('#sheetCancel').addEventListener('click', closeSheet);
+    sheet.querySelector('#sheetOk').addEventListener('click', async (e) => {
+      const reason = sheet.querySelector('#reasonInput').value.trim();
+      if (reason.length < 2) { toast('请填写申请原因'); return; }
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      try {
+        await api('/api/exceptions', {
+          method: 'POST',
+          body: { date: state.date, periodId: p.id, applyType: Number(sheet.querySelector('#typeSel').value), reason },
+        });
+        closeSheet();
+        toast('申请已提交，等待审核');
+        loadHome();
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message);
+      }
+    });
+  }
+
+  function bindTabs() {
+    document.querySelectorAll('.tabbar button').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        document.querySelectorAll('.tabbar button').forEach((b) => b.classList.toggle('active', b === btn));
+        state.tab = btn.dataset.tab;
+        ['home', 'records', 'mine'].forEach((t) => $(`view-${t}`).classList.toggle('hidden', t !== state.tab));
+        if (state.tab === 'records') await loadRecords();
+        if (state.tab === 'mine') renderMine();
+      });
+    });
+    $('logoutBtn').addEventListener('click', async () => {
+      await api('/api/logout', { method: 'POST' }).catch(() => {});
+      location.replace('/login');
+    });
+    $('switchBtn').addEventListener('click', async () => {
+      await api('/api/logout', { method: 'POST' }).catch(() => {});
+      location.replace('/login');
+    });
+  }
+
+  async function loadRecords() {
+    const box = $('recordList');
+    box.innerHTML = '<div class="empty">加载中…</div>';
+    try {
+      const data = await api('/api/orders/my');
+      if (!data.orders.length) { box.innerHTML = '<div class="empty">暂无报餐记录</div>'; return; }
+      box.innerHTML = data.orders.map((o) => `
+        <div class="rec-item">
+          <div class="rec-top">
+            <div class="date">${esc(o.date)} ${esc(o.periodName)}</div>
+            ${statusTag(o.status)}
+          </div>
+          <div class="rec-meta">${o.qty} 份${o.dishNames ? ' · ' + esc(o.dishNames) : ''}${o.remark ? ' · ' + esc(o.remark) : ''} · 提交于 ${esc(o.submitTime || '')}</div>
+          ${o.selfPayAmount > 0 ? `<div class="rec-meta pay-text">需自费 ¥${money(o.selfPayAmount)}（餐标 ¥${money(o.totalAmount)}）</div>` : ''}
+        </div>`).join('');
+    } catch (e) {
+      box.innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderMine() {
+    const u = state.user;
+    $('profileBox').innerHTML = `
+      <div style="display:flex;justify-content:space-between;padding:6px 0"><span class="muted">姓名</span><span>${esc(u.name)}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0"><span class="muted">工号</span><span>${esc(u.account)}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:6px 0"><span class="muted">部门</span><span>${esc(u.deptName)}</span></div>`;
+    const r = state.home?.rule;
+    $('ruleBox').innerHTML = r
+      ? `最多提前 <b>${r.advanceDays}</b> 天报餐；截止前${r.allowCancel ? '可' : '不可'}自助取消；单餐上限 <b>${r.maxQtyPerMeal}</b> 份；免费额度 <b>¥${money(r.freeQuota ?? 20)}</b> / 份，超出部分自费。`
+      : '暂未获取到规则。';
+  }
+
+  init();
+</script>
+</body>
+</html>
